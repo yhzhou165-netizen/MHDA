@@ -184,6 +184,7 @@ def train_mhda_clgae(model_config_name='full', data_dir=None, output_dir=None,
     }
     (output / 'run_config.json').write_text(json.dumps(run_config, indent=2), encoding='utf-8')
     fold_results, fold_plot_data = [], []
+    training_history = []
     for fold in folds:
         assert_fold_isolation(fold)
         inputs = build_fold_inputs(fold['A_fit'], semantic)
@@ -206,6 +207,7 @@ def train_mhda_clgae(model_config_name='full', data_dir=None, output_dir=None,
         session_config = tf.ConfigProto()
         session_config.gpu_options.allow_growth = True
         history = []
+        progress_records = []
         with tf.Session(config=session_config) as sess:
             sess.run(tf.global_variables_initializer())
             for epoch in range(num_epochs):
@@ -231,13 +233,21 @@ def train_mhda_clgae(model_config_name='full', data_dir=None, output_dir=None,
                     metrics = OptimizerMetrics.compute_metrics(val_labels, val_logits)
                     history.append({'epoch': epoch + 1, 'train_loss': float(np.mean(losses)),
                                     'validation_auc': float(metrics['auc'])})
+                    # Match the console precision; preserve full precision in history.json.
+                    progress_record = {
+                        'epoch': epoch + 1,
+                        'loss': float('%.6f' % history[-1]['train_loss']),
+                        'val_AUC': float('%.4f' % history[-1]['validation_auc'])
+                    }
+                    progress_records.append(progress_record)
                     if metrics['auc'] > best_auc:
                         best_auc, best_epoch, patience = metrics['auc'], epoch + 1, 0
                         saver.save(sess, checkpoint)
                     else:
                         patience += 1
                     print('  epoch=%d loss=%.6f val_AUC=%.4f' % (
-                        epoch + 1, np.mean(losses), metrics['auc']))
+                        progress_record['epoch'], progress_record['loss'],
+                        progress_record['val_AUC']))
                     if patience >= 15:
                         break
             saver.restore(sess, checkpoint)
@@ -257,10 +267,12 @@ def train_mhda_clgae(model_config_name='full', data_dir=None, output_dir=None,
                             test_edges=test_edges, test_labels=test_labels, test_logits=test_logits)
         (folder / 'metrics.json').write_text(json.dumps(metrics, indent=2), encoding='utf-8')
         (folder / 'history.json').write_text(json.dumps(history, indent=2), encoding='utf-8')
+        training_history.append({'fold': int(fold['fold']), 'records': progress_records})
     from Plot_ROC_PR import ROCPRPlotter
     plot_path = ROCPRPlotter(save_dir=str(output / 'figs')).plot_5fold_curves(
         fold_plot_data, model_name=model_config_name, show_mean=True)
     summary = {'model_config': model_config_name, 'fold_results': fold_results,
+               'training_history': training_history,
                'metrics': {}, 'plot_path': str(plot_path), 'output_dir': str(output)}
     for metric in ('auc', 'aupr', 'f1', 'precision', 'recall', 'accuracy'):
         values = [item[metric] for item in fold_results]
